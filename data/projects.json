@@ -1,0 +1,48 @@
+[
+  {
+    "id": "1778040051474",
+    "name": "Website Redesign",
+    "description": "",
+    "owner": "testuser",
+    "members": [
+      "testuser"
+    ],
+    "columns": [
+      {
+        "id": "todo",
+        "title": "To Do"
+      },
+      {
+        "id": "in-progress",
+        "title": "In Progress"
+      },
+      {
+        "id": "done",
+        "title": "Done"
+      }
+    ]
+  },
+  {
+    "id": "1778040212903",
+    "name": "Test Project",
+    "description": "",
+    "owner": "testuser",
+    "members": [
+      "testuser"
+    ],
+    "columns": [
+      {
+        "id": "todo",
+        "title": "To Do"
+      },
+      {
+        "id": "in-progress",
+        "title": "In Progress"
+      },
+      {
+        "id": "done",
+        "title": "Done"
+      }
+    ]
+  }
+]
