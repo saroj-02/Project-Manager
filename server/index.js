@@ -10,6 +10,7 @@ const connectDB = require('./db');
 const User = require('./models/User');
 const Project = require('./models/Project');
 const Task = require('./models/Task');
+const Invite = require('./models/Invite');
 
 // Connect to Database
 connectDB();
@@ -33,9 +34,14 @@ app.post('/api/auth/register', async (req, res) => {
     try {
         const { username, password, email } = req.body;
         
-        const existingUser = await User.findOne({ username });
-        if (existingUser) {
-            return res.status(400).json({ message: 'User already exists' });
+        const existingUsername = await User.findOne({ username });
+        if (existingUsername) {
+            return res.status(400).json({ message: 'Username already exists' });
+        }
+
+        const existingEmail = await User.findOne({ email });
+        if (existingEmail) {
+            return res.status(400).json({ message: 'Email already registered' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -52,7 +58,13 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        const user = await User.findOne({ username });
+        // Allow login with either username or email
+        const user = await User.findOne({
+            $or: [
+                { username: username },
+                { email: username }
+            ]
+        });
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).json({ message: 'Invalid credentials' });
@@ -117,28 +129,117 @@ app.post('/api/projects', authenticate, async (req, res) => {
     }
 });
 
-app.post('/api/projects/:projectId/members', authenticate, async (req, res) => {
+app.post('/api/projects/:projectId/invites', authenticate, async (req, res) => {
     try {
         const { username } = req.body;
         const project = await Project.findById(req.params.projectId);
 
         if (!project) return res.status(404).json({ message: 'Project not found' });
         if (project.owner !== req.user.username) {
-            return res.status(403).json({ message: 'Only the owner can add members' });
+            return res.status(403).json({ message: 'Only the owner can invite members' });
         }
 
-        const userExists = await User.findOne({ username });
-        if (!userExists) return res.status(404).json({ message: 'User not found' });
+        const recipientUser = await User.findOne({ username });
+        if (!recipientUser) return res.status(404).json({ message: 'User not found' });
+
+        if (project.owner === username) {
+            return res.status(400).json({ message: 'User is the owner of this project' });
+        }
 
         if (project.members.includes(username)) {
             return res.status(400).json({ message: 'User already a member' });
         }
 
-        project.members.push(username);
-        await project.save();
-        
-        io.to(req.params.projectId).emit('member-added', { projectId: req.params.projectId, username });
-        res.json({ message: 'Member added successfully', members: project.members });
+        const existingInvite = await Invite.findOne({
+            projectId: req.params.projectId,
+            recipient: username,
+            status: 'pending'
+        });
+        if (existingInvite) {
+            return res.status(400).json({ message: 'Invitation already pending for this user' });
+        }
+
+        const newInvite = new Invite({
+            projectId: project._id,
+            projectName: project.name,
+            sender: req.user.username,
+            recipient: username,
+            status: 'pending'
+        });
+
+        await newInvite.save();
+
+        io.to(`user:${username}`).emit('invite-received', {
+            id: newInvite._id,
+            projectId: newInvite.projectId,
+            projectName: newInvite.projectName,
+            sender: newInvite.sender,
+            recipient: newInvite.recipient,
+            status: newInvite.status,
+            createdAt: newInvite.createdAt
+        });
+
+        res.status(201).json({ message: 'Invitation sent successfully', invite: newInvite });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+app.get('/api/invites', authenticate, async (req, res) => {
+    try {
+        const invites = await Invite.find({ recipient: req.user.username, status: 'pending' });
+        const formattedInvites = invites.map(i => ({ ...i.toObject(), id: i._id }));
+        res.json(formattedInvites);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+app.post('/api/invites/:inviteId/respond', authenticate, async (req, res) => {
+    try {
+        const { action } = req.body;
+        if (!['accept', 'reject'].includes(action)) {
+            return res.status(400).json({ message: 'Invalid action' });
+        }
+
+        const invite = await Invite.findById(req.params.inviteId);
+        if (!invite) return res.status(404).json({ message: 'Invitation not found' });
+
+        if (invite.recipient !== req.user.username) {
+            return res.status(403).json({ message: 'Unauthorized' });
+        }
+
+        if (invite.status !== 'pending') {
+            return res.status(400).json({ message: 'Invitation has already been processed' });
+        }
+
+        if (action === 'accept') {
+            const project = await Project.findById(invite.projectId);
+            if (!project) {
+                invite.status = 'rejected';
+                await invite.save();
+                return res.status(404).json({ message: 'Project no longer exists' });
+            }
+
+            if (!project.members.includes(req.user.username)) {
+                project.members.push(req.user.username);
+                await project.save();
+            }
+
+            invite.status = 'accepted';
+            await invite.save();
+
+            io.to(invite.projectId.toString()).emit('member-added', {
+                projectId: invite.projectId.toString(),
+                username: req.user.username
+            });
+
+            res.json({ message: 'Invitation accepted', projectId: invite.projectId });
+        } else {
+            invite.status = 'rejected';
+            await invite.save();
+            res.json({ message: 'Invitation rejected' });
+        }
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -165,8 +266,20 @@ app.delete('/api/projects/:projectId', authenticate, async (req, res) => {
 // Task Routes
 app.get('/api/projects/:projectId/tasks', authenticate, async (req, res) => {
     try {
+        const project = await Project.findById(req.params.projectId);
+        if (!project) return res.status(404).json({ message: 'Project not found' });
+
+        const isOwner = project.owner === req.user.username;
         const projectTasks = await Task.find({ projectId: req.params.projectId });
-        const formattedTasks = projectTasks.map(t => ({ ...t.toObject(), id: t._id }));
+        
+        // Filter out hidden tasks for non-owner members
+        const filteredTasks = projectTasks.filter(task => {
+            if (isOwner) return true;
+            const perm = task.permissions.find(p => p.username === req.user.username);
+            return !perm || perm.accessLevel !== 'hidden';
+        });
+
+        const formattedTasks = filteredTasks.map(t => ({ ...t.toObject(), id: t._id }));
         res.json(formattedTasks);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -195,16 +308,62 @@ app.post('/api/projects/:projectId/tasks', authenticate, async (req, res) => {
 
 app.patch('/api/tasks/:taskId', authenticate, async (req, res) => {
     try {
+        const task = await Task.findById(req.params.taskId);
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        const project = await Project.findById(task.projectId);
+        if (!project) return res.status(404).json({ message: 'Project not found' });
+
+        // If not the owner, check task permissions
+        if (project.owner !== req.user.username) {
+            const userPerm = task.permissions.find(p => p.username === req.user.username);
+            if (userPerm && userPerm.accessLevel !== 'allow') {
+                return res.status(403).json({ message: 'You have view-only access and cannot edit this task' });
+            }
+        }
+
         const updatedTask = await Task.findByIdAndUpdate(
             req.params.taskId,
             { $set: req.body },
             { new: true }
         );
         
-        if (!updatedTask) return res.status(404).json({ message: 'Task not found' });
-
         const formattedTask = { ...updatedTask.toObject(), id: updatedTask._id };
         io.to(updatedTask.projectId).emit('task-updated', formattedTask);
+        res.json(formattedTask);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+app.patch('/api/tasks/:taskId/permissions', authenticate, async (req, res) => {
+    try {
+        const { username, accessLevel } = req.body;
+        if (!['allow', 'view-only', 'hidden'].includes(accessLevel)) {
+            return res.status(400).json({ message: 'Invalid access level' });
+        }
+
+        const task = await Task.findById(req.params.taskId);
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        const project = await Project.findById(task.projectId);
+        if (!project) return res.status(404).json({ message: 'Project not found' });
+
+        if (project.owner !== req.user.username) {
+            return res.status(403).json({ message: 'Only the project owner can change permissions' });
+        }
+
+        const existingPermission = task.permissions.find(p => p.username === username);
+        if (existingPermission) {
+            existingPermission.accessLevel = accessLevel;
+        } else {
+            task.permissions.push({ username, accessLevel });
+        }
+
+        await task.save();
+
+        const formattedTask = { ...task.toObject(), id: task._id };
+        io.to(task.projectId).emit('task-updated', formattedTask);
         res.json(formattedTask);
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -231,8 +390,17 @@ app.post('/api/tasks/:taskId/comments', authenticate, async (req, res) => {
     try {
         const { content } = req.body;
         const task = await Task.findById(req.params.taskId);
-
         if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        const project = await Project.findById(task.projectId);
+        if (!project) return res.status(404).json({ message: 'Project not found' });
+
+        if (project.owner !== req.user.username) {
+            const userPerm = task.permissions.find(p => p.username === req.user.username);
+            if (userPerm && userPerm.accessLevel !== 'allow') {
+                return res.status(403).json({ message: 'You have view-only access and cannot comment on this task' });
+            }
+        }
 
         const newComment = {
             content,
@@ -243,7 +411,6 @@ app.post('/api/tasks/:taskId/comments', authenticate, async (req, res) => {
         task.comments.push(newComment);
         await task.save();
         
-        // Get the last comment (the one we just added) to include its generated _id
         const savedComment = task.comments[task.comments.length - 1];
         const formattedComment = { ...savedComment.toObject(), id: savedComment._id };
         
@@ -257,6 +424,11 @@ app.post('/api/tasks/:taskId/comments', authenticate, async (req, res) => {
 // Socket logic
 io.on('connection', (socket) => {
     console.log('a user connected');
+    
+    socket.on('join-user', (username) => {
+        socket.join(`user:${username}`);
+        console.log(`User joined personal room: ${username}`);
+    });
     
     socket.on('join-project', (projectId) => {
         socket.join(projectId);
@@ -273,7 +445,7 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

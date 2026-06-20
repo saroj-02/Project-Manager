@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Layout as LayoutIcon, Users, Clock, ArrowRight } from 'lucide-react';
+import { API_URL } from '../config';
 
 function Dashboard() {
   const [projects, setProjects] = useState([]);
@@ -10,7 +11,7 @@ function Dashboard() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/projects', {
+      const res = await fetch(`${API_URL}/api/projects`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       const data = await res.json();
@@ -29,7 +30,7 @@ function Dashboard() {
   const handleCreateProject = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch('http://localhost:5000/api/projects', {
+      const res = await fetch(`${API_URL}/api/projects`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

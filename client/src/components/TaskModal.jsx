@@ -1,18 +1,33 @@
 import React, { useState } from 'react';
 import { X, User, MessageSquare, Send, Calendar, Tag, AlignLeft, Trash2, ChevronDown } from 'lucide-react';
+import { API_URL } from '../config';
 
-function TaskModal({ task: initialTask, onClose, members = [] }) {
+const PREDEFINED_LABELS = [
+  { name: 'Bug', color: '#ef4444' },
+  { name: 'Feature', color: '#3b82f6' },
+  { name: 'Design', color: '#ec4899' },
+  { name: 'High Priority', color: '#f59e0b' },
+  { name: 'Documentation', color: '#10b981' }
+];
+
+function TaskModal({ task: initialTask, onClose, members = [], currentUser = {}, isOwner, onUpdate }) {
   const [task, setTask] = useState(initialTask);
   const [comment, setComment] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showLabelPopover, setShowLabelPopover] = useState(false);
+
+  const userPermission = task.permissions?.find(p => p.username === currentUser.username);
+  const isViewOnly = !isOwner && userPermission && userPermission.accessLevel === 'view-only';
 
   React.useEffect(() => {
     setTask(initialTask);
   }, [initialTask]);
 
   const handleUpdate = async (updates) => {
+    const taskId = task.id || task._id;
+    console.log("handleUpdate called, taskId:", taskId, "updates:", updates);
     try {
-      const res = await fetch(`http://localhost:5000/api/tasks/${task.id}`, {
+      const res = await fetch(`${API_URL}/api/tasks/${taskId}`, {
         method: 'PATCH',
         headers: { 
           'Content-Type': 'application/json',
@@ -20,17 +35,43 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
         },
         body: JSON.stringify(updates)
       });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || "Failed to update task");
+      }
       const data = await res.json();
       setTask(data);
+      if (onUpdate) onUpdate(data);
     } catch (err) {
-      console.error(err);
+      console.error("handleUpdate error:", err);
     }
+  };
+
+  const handleJoinTask = () => {
+    console.log("handleJoinTask called, currentUser:", currentUser);
+    if (currentUser && currentUser.username) {
+      handleUpdate({ assignee: currentUser.username });
+    } else {
+      console.error("handleJoinTask failed: currentUser or username is undefined", currentUser);
+    }
+  };
+
+  const handleToggleLabel = (labelName) => {
+    const currentLabels = task.labels || [];
+    let newLabels;
+    if (currentLabels.includes(labelName)) {
+      newLabels = currentLabels.filter(l => l !== labelName);
+    } else {
+      newLabels = [...currentLabels, labelName];
+    }
+    handleUpdate({ labels: newLabels });
   };
 
   const handleDelete = async () => {
     if (!window.confirm('Are you sure you want to delete this task?')) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/tasks/${task.id}`, {
+      const taskId = task.id || task._id;
+      const res = await fetch(`${API_URL}/api/tasks/${taskId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -47,7 +88,8 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
     if (!comment.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:5000/api/tasks/${task.id}/comments`, {
+      const taskId = task.id || task._id;
+      const res = await fetch(`${API_URL}/api/tasks/${taskId}/comments`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -57,9 +99,10 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
       });
       if (res.ok) {
         setComment('');
-        // Socket will update the UI, but we can also update local state for immediate feedback
         const newComment = await res.json();
-        setTask(prev => ({ ...prev, comments: [...prev.comments, newComment] }));
+        const updatedTask = { ...task, comments: [...task.comments, newComment] };
+        setTask(updatedTask);
+        if (onUpdate) onUpdate(updatedTask);
       }
     } catch (err) {
       console.error(err);
@@ -79,19 +122,49 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
         background: 'var(--bg-secondary)', padding: 0, overflow: 'hidden',
         display: 'flex', flexDirection: 'column'
       }}>
-        <header style={{ padding: '1.5rem', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{task.title}</h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <button onClick={handleDelete} style={{ background: 'none', color: '#ef4444' }}>
-              <Trash2 size={20} />
-            </button>
-            <button onClick={onClose} style={{ background: 'none', color: 'var(--text-secondary)' }}>
-              <X size={24} />
-            </button>
+        <header style={{ padding: '1.5rem', borderBottom: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold' }}>{task.title}</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              {!isViewOnly && (
+                <button onClick={handleDelete} style={{ background: 'none', color: '#ef4444' }}>
+                  <Trash2 size={20} />
+                </button>
+              )}
+              <button onClick={onClose} style={{ background: 'none', color: 'var(--text-secondary)' }}>
+                <X size={24} />
+              </button>
+            </div>
           </div>
+          {task.labels && task.labels.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.25rem' }}>
+              {task.labels.map(lName => {
+                const config = PREDEFINED_LABELS.find(p => p.name === lName) || { color: 'var(--accent-primary)' };
+                return (
+                  <span key={lName} style={{ 
+                    padding: '0.125rem 0.5rem', 
+                    borderRadius: '0.25rem', 
+                    fontSize: '0.75rem', 
+                    fontWeight: '600', 
+                    background: `${config.color}20`,
+                    color: config.color,
+                    border: `1px solid ${config.color}40`
+                  }}>
+                    {lName}
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </header>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '2rem' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem' }}>
+          {isViewOnly && (
+            <div style={{ background: 'rgba(239, 68, 68, 0.15)', borderLeft: '4px solid var(--danger)', padding: '0.75rem 1rem', color: 'var(--danger)', fontSize: '0.875rem', marginBottom: '1.5rem', borderRadius: '0 0.5rem 0.5rem 0' }}>
+              You have View-Only access to this task. Changes cannot be made.
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '2rem' }}>
           <div>
             <div style={{ marginBottom: '2rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
@@ -104,6 +177,7 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
                 onBlur={() => handleUpdate({ description: task.description })}
                 placeholder="Add a more detailed description..."
                 style={{ background: 'rgba(0,0,0,0.2)', border: 'none', minHeight: '100px', resize: 'vertical' }}
+                disabled={isViewOnly}
               />
             </div>
 
@@ -138,12 +212,13 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
                 </div>
                 <div style={{ flex: 1, position: 'relative' }}>
                   <input 
-                    placeholder="Write a comment..." 
+                    placeholder={isViewOnly ? "Comments are disabled for view-only users" : "Write a comment..."} 
                     value={comment} 
                     onChange={(e) => setComment(e.target.value)}
                     style={{ paddingRight: '3rem' }}
+                    disabled={isViewOnly}
                   />
-                  <button type="submit" disabled={loading} style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', color: 'var(--accent-primary)' }}>
+                  <button type="submit" disabled={loading || isViewOnly} style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', color: isViewOnly ? 'var(--text-secondary)' : 'var(--accent-primary)' }}>
                     <Send size={18} />
                   </button>
                 </div>
@@ -155,15 +230,71 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
             <div>
               <h4 style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '0.75rem' }}>Suggested</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <button style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.25rem', fontSize: '0.875rem', color: 'var(--text-primary)', textAlign: 'left' }}>
+                <button 
+                  onClick={handleJoinTask}
+                  disabled={isViewOnly}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.25rem', fontSize: '0.875rem', color: isViewOnly ? 'var(--text-secondary)' : 'var(--text-primary)', textAlign: 'left', width: '100%', cursor: isViewOnly ? 'not-allowed' : 'pointer', opacity: isViewOnly ? 0.5 : 1 }}
+                >
                   <User size={14} /> Join Task
                 </button>
-                <button style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.25rem', fontSize: '0.875rem', color: 'var(--text-primary)', textAlign: 'left' }}>
+                <button 
+                  onClick={() => document.getElementById('task-due-date-input')?.focus() || document.getElementById('task-due-date-input')?.showPicker?.()}
+                  disabled={isViewOnly}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.25rem', fontSize: '0.875rem', color: isViewOnly ? 'var(--text-secondary)' : 'var(--text-primary)', textAlign: 'left', width: '100%', cursor: isViewOnly ? 'not-allowed' : 'pointer', opacity: isViewOnly ? 0.5 : 1 }}
+                >
                   <Calendar size={14} /> Dates
                 </button>
-                <button style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.25rem', fontSize: '0.875rem', color: 'var(--text-primary)', textAlign: 'left' }}>
-                  <Tag size={14} /> Labels
-                </button>
+                <div style={{ position: 'relative' }}>
+                  <button 
+                    onClick={() => setShowLabelPopover(!showLabelPopover)}
+                    disabled={isViewOnly}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'var(--bg-tertiary)', borderRadius: '0.25rem', fontSize: '0.875rem', color: isViewOnly ? 'var(--text-secondary)' : 'var(--text-primary)', textAlign: 'left', width: '100%', cursor: isViewOnly ? 'not-allowed' : 'pointer', opacity: isViewOnly ? 0.5 : 1 }}
+                  >
+                    <Tag size={14} /> Labels
+                  </button>
+                  {showLabelPopover && (
+                    <div className="glass-card" style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      width: '200px',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--glass-border)',
+                      boxShadow: 'var(--shadow-lg)',
+                      zIndex: 2010,
+                      padding: '0.75rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.5rem',
+                      marginTop: '0.25rem'
+                    }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-secondary)' }}>Toggle Labels</span>
+                      {PREDEFINED_LABELS.map(l => {
+                        const isChecked = task.labels?.includes(l.name);
+                        return (
+                          <label key={l.name} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', cursor: 'pointer' }}>
+                            <input 
+                              type="checkbox" 
+                              checked={isChecked}
+                              onChange={() => handleToggleLabel(l.name)}
+                              style={{ width: 'auto', cursor: 'pointer' }}
+                            />
+                            <span style={{ 
+                              padding: '0.125rem 0.375rem', 
+                              borderRadius: '0.25rem', 
+                              fontSize: '0.75rem', 
+                              fontWeight: '600',
+                              background: l.color, 
+                              color: 'white' 
+                            }}>
+                              {l.name}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -176,6 +307,7 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
                     <select 
                       value={task.assignee || ''} 
                       onChange={(e) => handleUpdate({ assignee: e.target.value })}
+                      disabled={isViewOnly}
                       style={{ 
                         appearance: 'none',
                         background: 'var(--bg-tertiary)',
@@ -184,7 +316,7 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
                         padding: '0.5rem 2rem 0.5rem 0.75rem',
                         borderRadius: '0.25rem',
                         fontSize: '0.875rem',
-                        cursor: 'pointer',
+                        cursor: isViewOnly ? 'not-allowed' : 'pointer',
                         width: '100%'
                       }}
                     >
@@ -196,9 +328,53 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
                     <ChevronDown size={14} style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-secondary)' }} />
                   </div>
                 </div>
+
                 <div>
                   <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Status</span>
-                  <span style={{ display: 'inline-block', padding: '0.25rem 0.5rem', background: 'var(--accent-primary)', borderRadius: '1rem', fontSize: '0.75rem' }}>{task.columnId}</span>
+                  <div style={{ position: 'relative' }}>
+                    <select 
+                      value={task.columnId || 'todo'} 
+                      onChange={(e) => handleUpdate({ columnId: e.target.value })}
+                      disabled={isViewOnly}
+                      style={{ 
+                        appearance: 'none',
+                        background: 'var(--bg-tertiary)',
+                        border: '1px solid var(--glass-border)',
+                        color: 'var(--text-primary)',
+                        padding: '0.5rem 2rem 0.5rem 0.75rem',
+                        borderRadius: '0.25rem',
+                        fontSize: '0.875rem',
+                        cursor: isViewOnly ? 'not-allowed' : 'pointer',
+                        width: '100%'
+                      }}
+                    >
+                      <option value="todo">To Do</option>
+                      <option value="in-progress">In Progress</option>
+                      <option value="done">Done</option>
+                    </select>
+                    <ChevronDown size={14} style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-secondary)' }} />
+                  </div>
+                </div>
+
+                <div>
+                  <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Due Date</span>
+                  <input 
+                    type="date"
+                    id="task-due-date-input"
+                    value={task.dueDate ? task.dueDate.split('T')[0] : ''}
+                    onChange={(e) => handleUpdate({ dueDate: e.target.value || null })}
+                    disabled={isViewOnly}
+                    style={{ 
+                      background: 'var(--bg-tertiary)',
+                      border: '1px solid var(--glass-border)',
+                      color: 'var(--text-primary)',
+                      padding: '0.5rem 0.75rem',
+                      borderRadius: '0.25rem',
+                      fontSize: '0.875rem',
+                      cursor: isViewOnly ? 'not-allowed' : 'pointer',
+                      width: '100%'
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -206,6 +382,7 @@ function TaskModal({ task: initialTask, onClose, members = [] }) {
         </div>
       </div>
     </div>
+  </div>
   );
 }
 
