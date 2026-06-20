@@ -1,4 +1,6 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
+
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 
 function run(fullCommand, label) {
   const child = spawn(fullCommand, {
@@ -20,6 +22,19 @@ function run(fullCommand, label) {
   return child;
 }
 
-console.log('Starting development servers for client and server...');
-run('npm run dev --prefix client', 'client');
-run('npm run dev --prefix server', 'server');
+if (isProduction) {
+  console.log('Production/Render environment detected.');
+  console.log('Installing server dependencies...');
+  try {
+    execSync('npm run install-server', { stdio: 'inherit' });
+  } catch (err) {
+    console.error('Failed to install server dependencies:', err);
+    process.exit(1);
+  }
+  console.log('Starting backend server...');
+  run('node server/index.js', 'server');
+} else {
+  console.log('Local development environment detected. Starting both client and server...');
+  run('npm run dev --prefix client', 'client');
+  run('npm run dev --prefix server', 'server');
+}
