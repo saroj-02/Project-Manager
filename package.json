@@ -8,12 +8,9 @@
     "install-server": "npm install --prefix server",
     "build": "npm run install-client && npm run build-client && rm -rf dist && cp -r client/dist dist",
     "start": "npm run install-server && node server/index.js",
-    "dev": "concurrently \"npm run dev --prefix client\" \"npm run dev --prefix server\""
+    "dev": "node dev-runner.js"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "concurrently": "^10.0.3"
-  }
+  "license": "ISC"
 }
