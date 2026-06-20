@@ -23,4 +23,7 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        sync: false
+        fromService:
+          type: web
+          name: project-manager-backend
+          property: host
